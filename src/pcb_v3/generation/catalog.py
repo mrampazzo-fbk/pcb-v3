@@ -1,10 +1,9 @@
 """Fixed binary schedules using the common scalar LHS and array Trial."""
-from dataclasses import asdict, dataclass
-import json
-from pathlib import Path
+from dataclasses import dataclass
 
 import numpy as np
 
+from ..time_grid import Simulation
 from .design import HORIZON, PARAMETERS, scalar_lhs
 from .profiles import Profile
 from .variable import Trial
@@ -30,7 +29,7 @@ PROFILES = tuple(Profile(name, tuple(points)) for name, points in (
 
 
 @dataclass(frozen=True)
-class Config:
+class Config(Simulation):
     samples: int = 500
     scalar_seed: int = 42
     profiles: tuple[Profile, ...] = PROFILES
@@ -43,7 +42,7 @@ def make_design(config=Config()):
     for profile in config.profiles:
         if not profile.id or not all(c.isalnum() or c in '_-' for c in profile.id):
             raise ValueError('profile IDs must contain letters, numbers, underscores or hyphens')
-        profile.validate(HORIZON)
+        profile.validate(config.horizon_seconds)
     rng = np.random.default_rng(config.scalar_seed)
     scalars = scalar_lhs(config.samples, rng)[rng.permutation(config.samples)]
     size, remainder = divmod(config.samples, len(config.profiles))
@@ -51,29 +50,10 @@ def make_design(config=Config()):
     trials, offset = [], 0
     for group, profile in enumerate(config.profiles, 1):
         count = size + (group <= remainder)
-        fraction = float(profile.interval_mean(np.array([0.]), HORIZON, HORIZON)[0])
+        fraction = float(profile.interval_mean(np.array([0.]), config.horizon_seconds, config.horizon_seconds)[0])
         for i in range(offset, offset + count):
             trials.append(Trial(id=f'{profile.id}-s{i:03d}', group=group, pair=i,
                 scalars=dict(zip(PARAMETERS, map(float, scalars[i]))), events=profile.changes,
                 capacity=capacity, on_fraction=fraction, concentration=0.))
         offset += count
     return trials
-
-
-def document(config, trials):
-    return {'schema': 'pcb-catalog-v1', 'config': asdict(config),
-            'horizon_seconds': HORIZON, 'array_capacity': trials[0].capacity,
-            'cases': [asdict(t) for t in trials]}
-
-
-def load_design(path):
-    doc = json.loads(Path(path).read_text())
-    if doc.get('schema') != 'pcb-catalog-v1':
-        raise ValueError('expected a catalog design')
-    settings = dict(doc['config'])
-    settings['profiles'] = tuple(Profile(p['id'], tuple(map(tuple, p['changes']))) for p in settings['profiles'])
-    config = Config(**settings)
-    trials = make_design(config)
-    if doc != json.loads(json.dumps(document(config, trials))):
-        raise ValueError('catalog design differs from its seed/configuration')
-    return config, trials

@@ -1,28 +1,25 @@
-"""Keep the launcher's CHANGE/hash/resume logic with a short CSV header.
+"""Execute PCB cases through the public launcher API."""
+from esatan_results_reader.esatan_tmd import ThermalResultError
 
-The installed launcher automatically adds every CHANGE target to CSV_ENTITIES.
-32 array references exceed ESATAN's 255-character header limit. Scope this small
-adapter to one synchronous sweep; all array values remain in Case.values and in
-the launcher's parameter-space hash. No installed dependency is modified.
-"""
-from threading import Lock
-from unittest.mock import patch
-
-import esatan_launcher.sweep as launcher
-
-_LOCK = Lock()
+from ..time_grid import Simulation
+from .case import validate_solution
+from .inputs import to_case
+from .sweep import read_case
 
 
-class ArraySweep(launcher.Sweep):
-    def render_par(self, cases=None):
-        header = '$PARAMETERS, PARMONLY, CSV_ENTITIES = (T250, QI250)'
-        selected = self.cases if cases is None else cases
-        return header + '\n#\n' + '\n#\n'.join(c.render() for c in selected) + '\n'
+def solve(install, deck, trials, directory, node_weights, simulation=Simulation()):
+    expected = {trial.id: trial for trial in trials}
 
+    def valid_result(case, path):
+        try:
+            validate_solution(read_case(path), expected[case.id], node_weights, simulation)
+        except (OSError, ValueError, ThermalResultError, IndexError, KeyError):
+            return False
+        return True
 
-def solve(install, deck, cases, directory):
-    with _LOCK, patch.object(launcher, 'Sweep', ArraySweep):
-        result = install.sweep(deck, cases, sweep_dir=directory, outputs=('T250', 'QI250'))
+    result = install.sweep(deck, [to_case(trial, simulation) for trial in trials],
+                           sweep_dir=directory, outputs=('T250', 'QI250'),
+                           include_swept_entities=False, validate_result=valid_result)
     if not result.ok:
         raise RuntimeError(f'incomplete sweep: {directory}; inspect tracker and solver logs')
     return result

@@ -4,19 +4,21 @@ from dataclasses import replace
 import json
 from pathlib import Path
 import sys
+from esatan_launcher import EsatanError
 
 from .generation import catalog, design, variable
+from .generation.study import document
 from .esatan.model import DEFAULT_DECK, source_profile
 from .generation.profiles import Profile
 from .workflow import dataset_name, export, family, generator, load_design, run
 
 
-def _catalog_profiles(args):
+def _catalog_profiles(args, horizon):
     profiles = catalog.PROFILES
     if args.catalog is not None:
         doc = json.loads(args.catalog.read_text())
-        if doc['horizon_seconds'] != design.HORIZON:
-            raise ValueError('catalog horizon must be 2200 seconds')
+        if doc['horizon_seconds'] != horizon:
+            raise ValueError('catalog horizon must match the study horizon')
         profiles = tuple(Profile(p['id'], tuple(map(tuple, p['changes']))) for p in doc['scenarios'])
     if args.profiles is not None:
         lookup = {p.id: p for p in profiles}
@@ -34,10 +36,11 @@ def _configuration(args, saved=None):
     if saved is not None and family(saved) != kind:
         raise ValueError('configuration differs from the saved design')
     names = ('samples', 'scalar_seed', 'timing_seed', 'min_on', 'min_off', 'intervals',
-             'on_fraction', 'concentrations', 'always_on', 'always_off')
+             'on_fraction', 'concentrations', 'always_on', 'always_off',
+             'horizon_seconds', 'native_step_seconds')
     options = {name: getattr(args, name) for name in names if getattr(args, name) is not None}
     if kind == 'variable':
-        if 'samples' in options and (saved is None or getattr(saved, 'total_samples', None) is not None):
+        if 'samples' in options and (saved is None or saved.total_samples is not None):
             options['total_samples'] = options.pop('samples')
         for name in ('intervals', 'on_fraction', 'concentrations'):
             if name in options:
@@ -45,7 +48,8 @@ def _configuration(args, saved=None):
     if args.catalog is not None or args.profiles is not None:
         if kind != 'catalog':
             raise ValueError('--catalog and --profiles require the catalog configuration')
-        options['profiles'] = _catalog_profiles(args)
+        horizon = options.get('horizon_seconds', saved.horizon_seconds if saved else design.HORIZON)
+        options['profiles'] = _catalog_profiles(args, horizon)
     if saved is not None:
         unsupported = options.keys() - saved.__dataclass_fields__.keys()
         if unsupported or replace(saved, **options) != saved:
@@ -79,6 +83,8 @@ def main(argv=None):
                        help='total cases (default 500)')
         p.add_argument('--scalar-seed', type=int)
         p.add_argument('--timing-seed', type=int)
+        p.add_argument('--horizon-seconds', type=float)
+        p.add_argument('--native-step-seconds', type=float)
         p.add_argument('--min-on', type=float)
         p.add_argument('--min-off', type=float)
         p.add_argument('--intervals', type=int, nargs='+')
@@ -93,17 +99,18 @@ def main(argv=None):
             p.add_argument('--out', type=Path, required=True)
         else:
             p.add_argument('--work', type=Path, required=True)
-            p.add_argument('--install-root', type=Path, default=Path('/home/esatan/ESATAN-TMS'))
+            p.add_argument('--install-root', type=Path)
     p = commands.add_parser('export')
     p.add_argument('--work', type=Path, required=True)
     p.add_argument('--out', type=Path)
-    p.add_argument('--step', type=int, choices=(5, 50), default=5)
+    p.add_argument('--step', type=float, help='output interval; defaults to the saved native step')
     args = parser.parse_args(argv)
     try:
         if args.command == 'export':
             work = args.work.resolve()
             config, _ = load_design(work / 'design.json')
-            print(export(work, args.out or work / dataset_name(config, args.step), args.step))
+            step = config.native_step_seconds if args.step is None else args.step
+            print(export(work, args.out or work / dataset_name(config, step), step))
             return
         saved = None
         if args.command == 'run' and (args.work / 'design.json').exists():
@@ -114,12 +121,13 @@ def main(argv=None):
         if args.command == 'preview':
             args.out.parent.mkdir(parents=True, exist_ok=True)
             with args.out.open('x') as out:
-                json.dump(module.document(config, trials), out, indent=2)
+                json.dump(document(config, trials), out, indent=2)
                 out.write('\n')
             print(args.out)
         else:
             from esatan_launcher import Install
             print(run(args.work, config, Install(args.install_root), args.source_deck))
-        print(f'{family(config)}: {len(trials)} cases; array capacity {len(trials[0].points)}')
-    except (OSError, ValueError, KeyError, TypeError) as error:
+        capacity = document(config, trials)['array_capacity']
+        print(f'{family(config)}: {len(trials)} cases; array capacity {capacity}')
+    except (OSError, ValueError, KeyError, TypeError, EsatanError, RuntimeError) as error:
         parser.error(str(error))

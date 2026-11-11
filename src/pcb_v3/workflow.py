@@ -5,16 +5,17 @@ import json
 from pathlib import Path
 
 import numpy as np
-from esatan_results_reader.esatan_tmd import ThermalResultError
 
 from .generation import design
-from .generation.design import PARAMETERS, HORIZON
-from .hdf5.writer import export_dataset
+from .generation.study import document, generator, load_design
+from .generation.design import PARAMETERS
+from .hdf5.writer import export_fields
 from .hdf5.power import add_forcing
 from .esatan.case import validate_solution
-from .esatan.model import BOUNDARY_NODES, DEFAULT_DECK, prepare, weights
+from .esatan.model import BOUNDARY_NODES, DEFAULT_DECK, digest, prepare, prepared_deck, weights
 from .esatan.launcher import solve
-from .esatan.sweep import SolvedSweep, attempt_paths, read_case, load_tracker
+from .esatan.sweep import SolvedSweep
+from .esatan.inputs import profile_points, to_case
 
 
 def save_json(path, value):
@@ -32,24 +33,6 @@ def locked(work):
         yield
 
 
-def generator(config):
-    from .generation import catalog, variable
-    for module in (design, variable, catalog):
-        if isinstance(config, module.Config):
-            return module
-    raise ValueError('unsupported study configuration')
-
-
-def load_design(path):
-    from .generation import catalog, variable
-    schema = json.loads(Path(path).read_text()).get('schema')
-    modules = {'pcb-variable-power-v1': design, 'pcb-variable-power-v2': variable,
-               'pcb-catalog-v1': catalog}
-    if schema not in modules:
-        raise ValueError('unsupported study schema')
-    return modules[schema].load_design(path)
-
-
 def family(config):
     name = generator(config).__name__.rsplit('.', 1)[-1]
     if name == 'catalog':
@@ -65,75 +48,63 @@ def initialize(work, config, source=DEFAULT_DECK):
         if load_design(path) != (config, trials):
             raise ValueError('study configuration differs; use a new directory')
     else:
-        save_json(path, module.document(config, trials))
+        if any(p.name != '.lock' for p in work.iterdir()):
+            raise ValueError('work directory is not empty; use a new directory')
+        save_json(path, document(config, trials))
     fixed = family(config) == 'single'
-    points = trials[0].points if fixed else max(trials, key=lambda t: t.group).points
-    period = config.period if fixed else (None if module is design else HORIZON + 1)
+    points = profile_points(trials[0] if fixed else max(trials, key=lambda t: t.group), config)
+    period = config.period if fixed else (None if module is design else config.horizon_seconds + 1)
     deck = prepare(source, work / 'inputs', points,
-                   period=period)
+                   period=period, simulation=config)
     return trials, deck
 
 
-def refresh_tracker(directory, trials, node_weights):
-    """Recover complete TMDs after interruption; never trust CSV status alone.
-
-    PAR order supplies the suffix even when an attempt has failed/pending cases.
-    Incomplete outputs stay on disk and are retried in a new launcher attempt.
-    """
-    path = directory / 'tracker.json'
-    if not path.exists():
-        return
-    tracker = load_tracker(directory)
-    expected = {t.id: t for t in trials}
-    records = {r.case.id: r for r in tracker.records}
-    if list(records) != list(expected) or any(dict(r.case.values) != expected[r.case.id].case().values for r in tracker.records):
-        raise ValueError('tracker does not match study selection')
-    attempts = set(directory.glob('attempt-*')) | {r.attempt_dir for r in tracker.records if r.attempt_dir}
-    for attempt in sorted(attempts):
-        pars = list(attempt.glob('*.PAR'))
-        if len(pars) != 1:
-            continue
-        for case_id, (index, tmd) in attempt_paths(tracker, attempt).items():
-            record = records[case_id]
-            if record.status == 'done' and record.attempt_dir != attempt:
-                continue
-            try:
-                case = read_case(tmd)
-                validate_solution(case, expected[case_id], node_weights)
-            except (OSError, ValueError, ThermalResultError, IndexError, KeyError):
-                if record.status == 'done':
-                    record.status = 'pending'
-                continue
-            record.status, record.attempt_dir = 'done', attempt
-    tracker.save()
-
 def checked_sweep(work):
-    _, trials = load_design(work / 'design.json')
-    sweep = SolvedSweep(work / 'sweep')
+    work = Path(work)
+    config, trials = load_design(work / 'design.json')
+    deck = prepared_deck(work / 'inputs')
+    sweep = SolvedSweep(work / 'sweep', deck=deck)
     if [r.id for r in sweep.cases] != [t.id for t in trials]:
         raise ValueError('solved cases do not match design')
-    node_weights = weights(next((work / 'inputs').glob('*.d')))
+    node_weights = weights(deck)
     for i, ref, case in sweep.iter_cases():
-        if ref.values != trials[i].case().values:
+        if ref.values != to_case(trials[i], config).values:
             raise ValueError(f'{ref.id}: tracker inputs differ')
-        validate_solution(case,trials[i],node_weights)
+        validate_solution(case, trials[i], node_weights, config)
     sweep.param_names = list(PARAMETERS)
     sweep.params = np.array([[t.scalars[p] for p in PARAMETERS] for t in trials])
     return sweep, trials, node_weights
 
 
-def export(work, output, step=5, *, solved=None):
-    if step not in (5,50):
-        raise ValueError('output step must be 5 or 50 seconds')
-    sweep, trials, node_weights = solved or checked_sweep(work)
-    return export_dataset(sweep,output,stride=step//5,boundary_nodes=BOUNDARY_NODES,
-                          finalize=lambda h5: add_forcing(h5,trials,node_weights,step))
+def export(work, output=None, step=None):
+    """Export a validated PCB dataset with interval-mean power and provenance."""
+    work = Path(work).expanduser().resolve()
+    with locked(work):
+        config, _ = load_design(work / 'design.json')
+        return _export(work, output, step, config, checked_sweep(work))
+
+
+def _export(work, output, step, config, solved):
+    step = config.native_step_seconds if step is None else step
+    stride = config.stride(step)
+    sweep, trials, node_weights = solved
+    output = output or work / dataset_name(config, step)
+
+    def finalize(h5):
+        add_forcing(h5, trials, node_weights, step, config)
+        h5.attrs.update(format='pcb-v3', dataset_kind='validated_pcb',
+                        design_sha256=digest(work / 'design.json'),
+                        model_bundle_sha256=digest(work / 'inputs/bundle.json'),
+                        native_step_seconds=config.native_step_seconds)
+
+    return export_fields(sweep, output, stride=stride, boundary_nodes=BOUNDARY_NODES,
+                          finalize=finalize)
 
 
 def dataset_name(config, step):
     kind = family(config)
     stem = 'profile-catalog' if kind == 'catalog' else f'{kind}-profile'
-    return f'pcb-{stem}-{step}s.h5'
+    return f'pcb-{stem}-{step:g}s.h5'
 
 
 def run(work, config, install, source=DEFAULT_DECK):
@@ -141,10 +112,9 @@ def run(work, config, install, source=DEFAULT_DECK):
     with locked(work):
         trials, deck = initialize(work,config,source)
         directory = work / 'sweep'
-        refresh_tracker(directory,trials,weights(deck))
-        solve(install,deck,[t.case() for t in trials],directory)
+        solve(install, deck, trials, directory, weights(deck), config)
         solved = checked_sweep(work)
-        output = work / dataset_name(config, 5)
+        output = work / dataset_name(config, config.native_step_seconds)
         if not output.exists():
-            export(work,output,solved=solved)
+            _export(work, output, None, config, solved)
         return output

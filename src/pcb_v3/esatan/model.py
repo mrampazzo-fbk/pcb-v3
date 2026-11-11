@@ -9,7 +9,8 @@ from pathlib import Path
 import numpy as np
 from esatan_launcher.deck import parse_deck
 
-from ..generation.design import HORIZON, CAPACITY
+from ..generation.design import CAPACITY
+from ..time_grid import Simulation
 from .acd import ARRAY_NAME, generate_acd, read_profile_points
 
 BOUNDARY_NODES = (268, 99998, 99999)
@@ -39,18 +40,17 @@ def source_profile(source):
     return tuple(map(tuple, read_profile_points(acd).tolist())), periods.pop()
 
 
-def prepare(source, directory, points, *, period=None):
+def prepare(source, directory, points, *, period=None, simulation=Simulation()):
     source, acd, template = input_paths(source)
     directory = Path(directory)
     request = {'sources': {p.name: digest(p) for p in (source, acd, template)},
-               'points': np.asarray(points).tolist(), 'recipe': 1}
-    if period is not None:
-        request['period'] = period
+               'points': np.asarray(points).tolist(), 'recipe': 2,
+               'period': simulation.horizon_seconds + 1 if period is None else period,
+               'simulation': {'horizon_seconds': simulation.horizon_seconds,
+                              'native_step_seconds': simulation.native_step_seconds}}
     if directory.exists():
         manifest = json.loads((directory / 'bundle.json').read_text())
-        previous = manifest['request'].copy()
-        previous['sources'] = {Path(name).name: value for name, value in previous['sources'].items()}
-        if previous != request or any(digest(directory / n) != h for n, h in manifest['files'].items()):
+        if manifest['request'] != request or any(digest(directory / n) != h for n, h in manifest['files'].items()):
             raise ValueError('prepared model changed; use a new work directory')
         return directory / source.name
     directory.parent.mkdir(parents=True, exist_ok=True)
@@ -58,16 +58,11 @@ def prepare(source, directory, points, *, period=None):
         staged = Path(tmp) / 'inputs'
         staged.mkdir()
         deck = staged / source.name
-        capacity = len(points) if period is not None else CAPACITY
-        text = rewrite_deck(source, capacity=capacity,
-                            period=period if period is not None else 2201)
-        text = re.sub(rf'(?m)^([ \t]*OUTINT\s*=\s*){NUMBER}', r'\g<1>5.0', text)
-        # Record all array elements at the initial frame, after CHANGE, to test
-        # !INITIAL restoration even for redundant points invisible in Q(t).
-        probe = '      IF (TIMEM .EQ. 0.0D0) THEN\n'
-        probe += ''.join(f"        WRITE(6,*) 'VP_POINT_{i:02d}', {ARRAY_NAME}(1,{i}), {ARRAY_NAME}(2,{i})\n" for i in range(1, capacity + 1))
-        probe += '      ENDIF\n'
-        text = text.replace('$OUTPUTS', '$OUTPUTS\n' + probe)
+        capacity = len(points)
+        text = rewrite_deck(source, capacity=capacity, simulation=simulation,
+                            period=period if period is not None else simulation.horizon_seconds + 1)
+        text = re.sub(rf'(?m)^([ \t]*OUTINT\s*=\s*){NUMBER}',
+                      rf'\g<1>{float(simulation.native_step_seconds)}', text)
         deck.write_text(text)
         generate_acd(acd, staged / f'{parse_deck(source).model_name}.acd', points)
         shutil.copy2(template, staged / 'Template.tpl')
@@ -90,7 +85,8 @@ def input_paths(source):
     return source, source.parent / f'{info.model_name}.acd', source.parent / 'Template.tpl'
 
 
-def rewrite_deck(source, *, capacity=CAPACITY, period=2201):
+def rewrite_deck(source, *, capacity=CAPACITY, period=None, simulation=Simulation()):
+    period = simulation.horizon_seconds + 1 if period is None else period
     text = Path(source).read_text()
     if sorted(weights(source)) != list(range(250,268)):
         raise ValueError('expected the eighteen CPU loads QI250–QI267')
@@ -99,6 +95,22 @@ def rewrite_deck(source, *, capacity=CAPACITY, period=2201):
                           rf'\g<1>{capacity}\2', text)
     if count != 1:
         raise ValueError('expected one deferred timing array')
-    text = re.sub(rf'(?m)^([ \t]*TIMEND\s*=\s*){NUMBER}', rf'\g<1>{HORIZON:g}', text)
+    text = re.sub(rf'(?m)^([ \t]*TIMEND\s*=\s*){NUMBER}', rf'\g<1>{simulation.horizon_seconds:g}', text)
     return LOAD.sub(lambda m: f'{m["indent"]}QI{m["node"]} = {m["weight"]} * Q_Heat_Source * '
                     f'INTCY1(TIMEM, {ARRAY_NAME}, 0, {period:g}D0, 0.0D0)', text)
+
+
+def prepared_deck(directory):
+    """Verify the frozen model before reading or exporting its results."""
+    directory = Path(directory)
+    manifest = json.loads((directory / 'bundle.json').read_text())
+    if manifest['request']['recipe'] != 2:
+        raise ValueError('unsupported model bundle; regenerate in a new work directory')
+    files = manifest['files']
+    if any(Path(name).name != name or digest(directory / name) != value
+           for name, value in files.items()):
+        raise ValueError('prepared model changed; use a new work directory')
+    decks = [directory / name for name in files if name.endswith('.d')]
+    if len(decks) != 1:
+        raise ValueError('prepared model must contain one deck')
+    return decks[0]

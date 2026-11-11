@@ -1,14 +1,14 @@
 """Interval-mean nodal and total power for the HDF5 writer."""
 import numpy as np
 
-from ..generation.design import HORIZON
+from ..time_grid import Simulation
 
 
-def add_forcing(data, trials, node_weights, step):
+def add_forcing(data, trials, node_weights, step, simulation=Simulation()):
     """Store interval-mean nodal watts and their total; keep profiles in the design."""
     weights = np.array([node_weights.get(int(n), 0.) for n in data['nodes/ids'][:]])
     amplitudes = np.array([t.scalars['Q_Heat_Source'] for t in trials])
-    write_mean_power(data, [t.profile for t in trials], amplitudes, weights, step, HORIZON)
+    write_mean_power(data, [t.profile for t in trials], amplitudes, weights, step, simulation.horizon_seconds)
 
 
 def write_mean_power(data, profiles, amplitudes, weights, step, horizon):

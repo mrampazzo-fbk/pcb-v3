@@ -6,7 +6,7 @@ import numpy as np
 from esatan_results_reader import EsatanTMD
 from esatan_results_reader.esatan_tmd import ThermalResultError
 
-from ..generation.design import HORIZON
+from ..time_grid import Simulation
 
 ESATAN_EDGE_TYPES = ("GL", "GR", "GF")
 
@@ -128,37 +128,31 @@ class TmdCase:
 
     @cached_property
     def _temperature_unit(self):
-        units = getattr(self.tmd, "unit_map", {})
-        attribute = getattr(self.tmd, "attr_map", {}).get(TEMPERATURE)
-        if attribute in units:
-            return {"degC": "Celsius", "degK": "Kelvin"}.get(
-                units[attribute], "Unknown"
-            )
-        # Support reader adapters that expose only TAbs.
-        t_abs = self.tmd.get_t_abs()
-        if isinstance(t_abs, bool):
-            # esatan-results-reader defaults an absent TAbs to degrees Celsius.
-            return "Celsius" if not t_abs else "Unknown"
-        if np.isclose(t_abs, 273.15):
-            return "Celsius"
-        if np.isclose(t_abs, 0.0):
-            return "Kelvin"
-        return "Unknown"
+        attribute = self.tmd.attr_map.get(TEMPERATURE)
+        return {"degC": "Celsius", "degK": "Kelvin"}.get(
+            self.tmd.unit_map.get(attribute), "Unknown"
+        )
 
 
-
-
-def validate_solution(case, trial, node_weights):
-    if not np.array_equal(case.times, np.arange(0., HORIZON + 5, 5.)):
+def validate_solution(case, trial, node_weights, simulation=Simulation()):
+    if not np.array_equal(case.times, simulation.times):
         raise ValueError(f'{trial.id}: incomplete or non-native TMD time grid')
     if not np.isfinite(case.temperature).all():
         raise ValueError(f'{trial.id}: invalid temperatures')
+    missing = ({268, 99999} | set(node_weights)) - set(case.node_numbers)
+    if missing:
+        raise ValueError(f'{trial.id}: missing required nodes {sorted(missing)}')
+    unit = case.get_temperature_unit()
+    if unit not in ('Celsius', 'Kelvin'):
+        raise ValueError(f'{trial.id}: unknown temperature units')
+    temperatures = case.temperature - 273.15 if unit == 'Kelvin' else case.temperature
     for node, parameter in ((268, 'T_Interface'), (99999, 'T_enviroment')):
-        observed = case.temperature[case.node_numbers == node]
-        if case.get_temperature_unit() == 'Kelvin':
-            observed = observed - 273.15
+        observed = temperatures[case.node_numbers == node]
         if not np.allclose(observed, trial.scalars[parameter], rtol=0, atol=1e-3):
             raise ValueError(f'{trial.id}: boundary {parameter} differs')
+    free = ~np.isin(case.node_numbers, (268, 99998, 99999))
+    if not free.any() or not np.allclose(temperatures[free, 0], trial.scalars['T_enviroment'], rtol=0, atol=1e-3):
+        raise ValueError(f'{trial.id}: initial free-node temperatures differ')
     # ESATAN may output the left limit at a discontinuity. Check every other
     # native sample, on every node, against its own original deck weight.
     check = ~np.any(np.isclose(case.times[:, None], np.array(trial.events)[:, 0], atol=1e-7, rtol=0), axis=1)

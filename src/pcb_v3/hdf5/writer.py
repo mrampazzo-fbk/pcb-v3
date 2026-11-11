@@ -11,7 +11,7 @@ import numpy as np
 from .fields import case_fields, inspect_fields
 
 SCHEMA_VERSION = 2
-FORMAT = "pcb-v3"
+FORMAT = "pcb-v3-fields"
 STRINGS = h5py.string_dtype("utf-8")
 # These are the collection's output units; source temperature units are
 # interpreted by TmdCase before conversion.
@@ -61,8 +61,8 @@ def _new_hdf5(path):
         os.link(temporary, path)
 
 
-def export_dataset(sweep, path, *, stride=1, dtype="float32", boundary_nodes=None, finalize=None):
-    """Write a compact collection, publishing it only after a successful export.
+def export_fields(sweep, path, *, stride=1, dtype="float32", boundary_nodes=None, finalize=None):
+    """Low-level field export, without DOE checks or interval-mean forcing.
 
     NaNs are preserved and temperatures converted to kelvin. None means boundary
     nodes are unknown; an empty sequence declares none. Existing files are refused.

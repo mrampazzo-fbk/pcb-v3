@@ -18,8 +18,13 @@ wheels = [
 
 [[package]]
 name = "esatan-launcher"
-version = "0.3.0"
-source = { git = "ssh://git@gitlab.fbk.eu/hyres/aisa/esatan-launcher.git#12964870cab360074606b81805aaa1414be45b55" }
+version = "0.4.0"
+source = { editable = "../esatan-launcher" }
+
+[package.metadata]
+
+[package.metadata.requires-dev]
+dev = [{ name = "pytest", specifier = ">=8" }]
 
 [[package]]
 name = "esatan-results-reader"
@@ -124,7 +129,7 @@ wheels = [
 
 [[package]]
 name = "pcb-v3"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "." }
 dependencies = [
     { name = "esatan-launcher" },
@@ -140,7 +145,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "esatan-launcher", git = "ssh://git@gitlab.fbk.eu/hyres/aisa/esatan-launcher.git" },
+    { name = "esatan-launcher", editable = "../esatan-launcher" },
     { name = "esatan-results-reader", git = "ssh://git@gitlab.fbk.eu/hyres/aisa/esatan-results-reader.git" },
     { name = "h5py", specifier = ">=3.10" },
     { name = "numpy" },

@@ -1,15 +1,14 @@
 """Stratified on-time and independent on/off allocations for variable profiles."""
-from dataclasses import asdict, dataclass
-import json
-from pathlib import Path
+from dataclasses import dataclass
 
 import numpy as np
 
+from ..time_grid import Simulation
 from .design import HORIZON, PARAMETERS, Trial as BaseTrial, scalar_lhs
 
 
 @dataclass(frozen=True)
-class Config:
+class Config(Simulation):
     scalar_seed: int = 42
     timing_seed: int = 42
     samples: int = 50  # Per interval count; the same scalar LHS is paired across groups.
@@ -21,6 +20,7 @@ class Config:
     total_samples: int | None = None  # One independent scalar LHS across all groups.
     always_on: int = 0
     always_off: int = 0
+    scalar_bounds: tuple[tuple[float, float], ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -28,13 +28,6 @@ class Trial(BaseTrial):
     capacity: int = 16
     on_fraction: float = 0.
     concentration: float = 1.
-
-    @property
-    def points(self):
-        # Redundant points preserve the final state, also for always-on cases.
-        extra = self.capacity - len(self.events)
-        tail = np.linspace(self.events[-1][0], HORIZON, extra + 1)[1:]
-        return np.array((*self.events, *((float(t), self.events[-1][1]) for t in tail)))
 
     @property
     def profile_kind(self):
@@ -62,11 +55,11 @@ def group_counts(config):
 
 def feasible_fractions(config, k):
     """Intersection of the requested range with the physical duration constraints."""
-    low = max(config.on_fraction[0], k * config.min_on / HORIZON)
-    high = min(config.on_fraction[1], 1 - (k + 1) * config.min_off / HORIZON)
+    low = max(config.on_fraction[0], k * config.min_on / config.horizon_seconds)
+    high = min(config.on_fraction[1], 1 - (k + 1) * config.min_off / config.horizon_seconds)
     if low >= high:
         raise ValueError(f'{k} intervals: no nonempty on-fraction range compatible '
-                         'with the minimum on/off durations and 2200 s horizon')
+                         f'with the minimum on/off durations and {config.horizon_seconds:g} s horizon')
     return low, high
 
 
@@ -89,7 +82,7 @@ def make_design(config=Config()):
     n = config.samples if config.total_samples is None else config.total_samples
     capacity = max(16, 2 * max(config.intervals) + 2)
     rng = np.random.default_rng(config.scalar_seed)
-    scalars = scalar_lhs(n, rng)
+    scalars = scalar_lhs(n, rng) if config.scalar_bounds is None else scalar_lhs(n, rng, config.scalar_bounds)
     if config.total_samples is not None:
         scalars = scalars[rng.permutation(n)]
     rng = np.random.default_rng(config.timing_seed)
@@ -105,10 +98,10 @@ def make_design(config=Config()):
         for local_index, (values, fraction, alpha_index) in enumerate(zip(group_scalars, fractions, alpha_indices)):
             pair = local_index if config.total_samples is None else offset + local_index
             alpha = config.concentrations[int(alpha_index)]
-            total_on = HORIZON * fraction
+            total_on = config.horizon_seconds * fraction
             on = config.min_on + rng.dirichlet(np.full(k, alpha)) * (total_on - k * config.min_on)
             off = config.min_off + rng.dirichlet(np.full(k + 1, alpha)) * (
-                HORIZON - total_on - (k + 1) * config.min_off)
+                config.horizon_seconds - total_on - (k + 1) * config.min_off)
             durations = np.empty(2 * k + 1)
             durations[::2], durations[1::2] = off, on
             times = np.r_[0., np.cumsum(durations)[:-1]]
@@ -116,10 +109,7 @@ def make_design(config=Config()):
             trial = Trial(id=f'v2-g{k}-p{pair:03d}', group=k, pair=pair,
                           scalars=dict(zip(PARAMETERS, map(float, values))), events=events,
                           capacity=capacity, on_fraction=float(fraction), concentration=float(alpha))
-            trial.profile.validate(HORIZON)
-            if (trial.points.shape != (capacity, 2)
-                    or np.any(np.diff(trial.points[:, 0]) <= 0)):
-                raise ValueError('invalid array points; check durations and concentrations')
+            trial.profile.validate(config.horizon_seconds)
             trials.append(trial)
         offset += n
     for kind, group, state, count in (('always_on', -1, 1., config.always_on),
@@ -131,29 +121,3 @@ def make_design(config=Config()):
                                 on_fraction=state, concentration=0.))
         offset += count
     return trials
-
-
-def document(config, trials):
-    settings = asdict(config)
-    if config.total_samples is None:
-        # Preserve the exact format and reproducibility of existing v2 studies.
-        for name in ('total_samples', 'always_on', 'always_off'):
-            settings.pop(name)
-    return {'schema': 'pcb-variable-power-v2', 'config': settings,
-            'horizon_seconds': HORIZON, 'array_capacity': trials[0].capacity,
-            'effective_on_fraction': {str(k): feasible_fractions(config, k) for k in config.intervals},
-            'cases': [asdict(t) for t in trials]}
-
-
-def load_design(path):
-    doc = json.loads(Path(path).read_text())
-    if doc.get('schema') != 'pcb-variable-power-v2':
-        raise ValueError('expected a v2 design; use a separate work directory for v2')
-    settings = dict(doc['config'])
-    for key in ('intervals', 'on_fraction', 'concentrations'):
-        settings[key] = tuple(settings[key])
-    config = Config(**settings)
-    trials = make_design(config)
-    if doc != json.loads(json.dumps(document(config, trials))):
-        raise ValueError('v2 design differs from its seeds/configuration')
-    return config, trials
