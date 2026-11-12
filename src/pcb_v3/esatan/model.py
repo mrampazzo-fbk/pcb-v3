@@ -11,7 +11,9 @@ from esatan_launcher.deck import parse_deck
 
 from ..generation.design import CAPACITY
 from ..time_grid import Simulation
-from .acd import ARRAY_NAME, generate_acd, read_profile_points
+from esatan_data.acd import read_table, replace_table
+
+ARRAY_NAME = "bc_Profilo_Clic001"
 
 BOUNDARY_NODES = (268, 99998, 99999)
 NUMBER = r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[dDeE][+-]?\d+)?"
@@ -37,10 +39,15 @@ def source_profile(source):
     periods = {float(m['period'].upper().replace('D', 'E')) for m in LOAD.finditer(deck.read_text())}
     if len(periods) != 1 or sorted(weights(deck)) != list(range(250, 268)):
         raise ValueError('expected eighteen CPU loads with one profile period')
-    return tuple(map(tuple, read_profile_points(acd).tolist())), periods.pop()
+    return tuple(map(tuple, read_table(acd, ARRAY_NAME).tolist())), periods.pop()
 
 
 def prepare(source, directory, points, *, period=None, simulation=Simulation()):
+    points = np.asarray(points, dtype=np.float64)
+    if (points.ndim != 2 or points.shape[1] != 2 or not len(points)
+            or not np.isfinite(points).all() or points[0, 0] != 0
+            or np.any(np.diff(points[:, 0]) <= 0) or np.any(points[:, 1] < 0)):
+        raise ValueError("PCB profile must increase from zero and have nonnegative finite values")
     source, acd, template = input_paths(source)
     directory = Path(directory)
     request = {'sources': {p.name: digest(p) for p in (source, acd, template)},
@@ -64,7 +71,7 @@ def prepare(source, directory, points, *, period=None, simulation=Simulation()):
         text = re.sub(rf'(?m)^([ \t]*OUTINT\s*=\s*){NUMBER}',
                       rf'\g<1>{float(simulation.native_step_seconds)}', text)
         deck.write_text(text)
-        generate_acd(acd, staged / f'{parse_deck(source).model_name}.acd', points)
+        replace_table(acd, staged / f'{parse_deck(source).model_name}.acd', points, array_name=ARRAY_NAME)
         shutil.copy2(template, staged / 'Template.tpl')
         manifest = {'request': request, 'files': {p.name: digest(p) for p in staged.iterdir()}}
         (staged / 'bundle.json').write_text(json.dumps(manifest, indent=2) + '\n')

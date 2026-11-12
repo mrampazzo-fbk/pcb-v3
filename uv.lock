@@ -17,8 +17,30 @@ wheels = [
 ]
 
 [[package]]
+name = "esatan-data-collection"
+version = "0.2.0"
+source = { editable = "../esatan-tms-data-collection" }
+dependencies = [
+    { name = "esatan-launcher" },
+    { name = "esatan-results-reader" },
+    { name = "h5py" },
+    { name = "numpy" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "esatan-launcher", editable = "../esatan-launcher" },
+    { name = "esatan-results-reader", editable = "../esatan-results-reader" },
+    { name = "h5py", specifier = ">=3.10" },
+    { name = "numpy" },
+]
+
+[package.metadata.requires-dev]
+dev = [{ name = "pytest", specifier = ">=8" }]
+
+[[package]]
 name = "esatan-launcher"
-version = "0.4.0"
+version = "0.5.0"
 source = { editable = "../esatan-launcher" }
 
 [package.metadata]
@@ -28,8 +50,8 @@ dev = [{ name = "pytest", specifier = ">=8" }]
 
 [[package]]
 name = "esatan-results-reader"
-version = "0.1.0"
-source = { git = "ssh://git@gitlab.fbk.eu/hyres/aisa/esatan-results-reader.git#e1cb65d1c9cfce41dbca9f517d85919bb6b02eac" }
+version = "0.2.0"
+source = { editable = "../esatan-results-reader" }
 dependencies = [
     { name = "h5py" },
     { name = "numpy" },
@@ -38,6 +60,22 @@ dependencies = [
     { name = "pint-xarray" },
     { name = "xarray" },
 ]
+
+[package.metadata]
+requires-dist = [
+    { name = "h5py", specifier = "==3.10" },
+    { name = "ipykernel", marker = "extra == 'viz'", specifier = ">=7.3.0" },
+    { name = "matplotlib", marker = "extra == 'viz'", specifier = ">=3.11.1" },
+    { name = "numpy", specifier = "==1.26.4" },
+    { name = "pandas", specifier = "==2.1.1" },
+    { name = "pint", specifier = "==0.22" },
+    { name = "pint-xarray", specifier = "==0.4" },
+    { name = "xarray", specifier = "==2023.9.0" },
+]
+provides-extras = ["viz"]
+
+[package.metadata.requires-dev]
+dev = [{ name = "pytest", specifier = ">=9.1.1" }]
 
 [[package]]
 name = "h5py"
@@ -129,9 +167,10 @@ wheels = [
 
 [[package]]
 name = "pcb-v3"
-version = "0.2.0"
+version = "0.3.0"
 source = { editable = "." }
 dependencies = [
+    { name = "esatan-data-collection" },
     { name = "esatan-launcher" },
     { name = "esatan-results-reader" },
     { name = "h5py" },
@@ -145,8 +184,9 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "esatan-data-collection", editable = "../esatan-tms-data-collection" },
     { name = "esatan-launcher", editable = "../esatan-launcher" },
-    { name = "esatan-results-reader", git = "ssh://git@gitlab.fbk.eu/hyres/aisa/esatan-results-reader.git" },
+    { name = "esatan-results-reader", editable = "../esatan-results-reader" },
     { name = "h5py", specifier = ">=3.10" },
     { name = "numpy" },
 ]

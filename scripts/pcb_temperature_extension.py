@@ -17,7 +17,7 @@ from esatan_launcher import Install
 from pcb_v3.generation import variable
 from pcb_v3.generation.design import PARAMETERS
 from pcb_v3.esatan import model
-from pcb_v3.esatan.sweep import SolvedSweep
+from esatan_data.collection import SolvedSweep
 from pcb_v3.workflow import initialize, locked, run, save_json
 
 BOUNDS = ((100., 450.), (10., 50.), (10., 30.))

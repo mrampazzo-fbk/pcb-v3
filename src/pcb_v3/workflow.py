@@ -9,12 +9,12 @@ import numpy as np
 from .generation import design
 from .generation.study import document, generator, load_design
 from .generation.design import PARAMETERS
-from .hdf5.writer import export_fields
-from .hdf5.power import add_forcing
+from esatan_data.writer import export_fields
+from .hdf5.power import export_blocks, field_metadata, add_total_power
 from .esatan.case import validate_solution
 from .esatan.model import BOUNDARY_NODES, DEFAULT_DECK, digest, prepare, prepared_deck, weights
 from .esatan.launcher import solve
-from .esatan.sweep import SolvedSweep
+from esatan_data.collection import SolvedSweep
 from .esatan.inputs import profile_points, to_case
 
 
@@ -91,14 +91,19 @@ def _export(work, output, step, config, solved):
     output = output or work / dataset_name(config, step)
 
     def finalize(h5):
-        add_forcing(h5, trials, node_weights, step, config)
+        add_total_power(h5)
         h5.attrs.update(format='pcb-v3', dataset_kind='validated_pcb',
                         design_sha256=digest(work / 'design.json'),
                         model_bundle_sha256=digest(work / 'inputs/bundle.json'),
-                        native_step_seconds=config.native_step_seconds)
+                        native_step_seconds=config.native_step_seconds,
+                        horizon_seconds=config.horizon_seconds, output_step_seconds=step,
+                        load_sampling="forward_interval_mean",
+                        frozen_properties="Capacitance(0), GL(0)")
 
     return export_fields(sweep, output, stride=stride, boundary_nodes=BOUNDARY_NODES,
-                          finalize=finalize)
+                          finalize=finalize, blocks=export_blocks(trials, node_weights, step, config),
+                          field_attrs=field_metadata(step),
+                          parameter_units={"T_enviroment":"degC", "T_Interface":"degC", "Q_Heat_Source":"W"})
 
 
 def dataset_name(config, step):

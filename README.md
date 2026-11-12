@@ -74,7 +74,8 @@ settings as well as the design settings. For `SingleConfig`, supply
 `load_design(path)` reads and verifies a saved design.
 
 The package owns the PCB experiment: DOE, profiles, model preparation, physical
-validation and the HDF5 dataset contract. `esatan-launcher` owns PAR rendering,
+validation and scientific dataset transformations. `esatan-data-collection` owns
+automatic axis inspection and the shared HDF5 writer. `esatan-launcher` owns PAR rendering,
 processes, attempts, case artifacts and tracker transitions. `pcb-v3` supplies a
 result validator to the launcher when resuming; it never edits tracker records.
 `esatan-results-reader` owns TMD parsing. The conversion from a trial to ESATAN
@@ -83,13 +84,29 @@ inputs lives in `esatan/inputs.py`, outside the DOE.
 `run` and `export` validate the design, model bundle, TMD time grid, loaded and
 boundary nodes, initial free-node temperatures, and nodal power. The complete
 export retains `format="pcb-v3"` and schema version 2: temperatures are in kelvin,
-power is the forward interval mean, and the final power sample is zero. New
-exports also record SHA-256 references to `design.json` and `inputs/bundle.json`.
-Keep these files with the HDF5; detailed timing events remain in the design.
+`fields/Total_Internal_Heat_Source` is the forward interval mean (the training
+default), with zero at the final sample because no interval follows the horizon.
+`fields/Total_Internal_Heat_Source_Instantaneous` preserves the native TMD values,
+including the solver's convention at discontinuities. `forcing/Q` sums the
+published interval nodal watts in float64. Interval means are recomputed from
+profiles for each export resolution; instantaneous power is only subsampled.
 
-The low-level writer is `pcb_v3.hdf5.writer.export_fields`. It writes
-`format="pcb-v3-fields"`, with native instantaneous power and no DOE validation or
-forcing reconstruction. It is deliberately separate from the public dataset API.
+Capacitance and GL use their first native frame for each case, recorded as
+`sampling="initial_value"`. This is an export decision: it does not claim that
+the original simulation used time-independent properties. GR and other fields
+retain their source evolution. All fields undergo exact automatic axis inspection
+before casting: no full `(case,time,node)` storage is imposed. No new interval
+axis is introduced, and schema version 2 is retained.
+
+Exports record SHA-256 references to `design.json` and `inputs/bundle.json`.
+Keep these files with the HDF5; detailed timing events remain in the design.
+Existing exports are never overwritten or automatically converted.
+
+The shared writer is `esatan_data.writer.export_fields`. Its default exports
+native fields with `format="esatan-data"`; PCB supplies transformed blocks before
+inspection, parameter units and scientific metadata. Publication remains atomic,
+including failures while writing derived power. Install the sibling collector
+with `uv sync`; it contains the sole writer used by PCB and CubeSat export.
 
 ## Study format
 

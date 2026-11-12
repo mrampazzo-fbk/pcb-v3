@@ -3,7 +3,7 @@ import numpy as np
 from esatan_launcher import Case
 
 from ..time_grid import Simulation
-from .acd import ARRAY_NAME
+from .model import ARRAY_NAME
 
 
 def profile_points(trial, simulation=Simulation()):

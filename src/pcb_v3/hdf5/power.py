@@ -1,48 +1,60 @@
-"""Interval-mean nodal and total power for the HDF5 writer."""
+"""PCB export recipe: native power, interval forcing and initial properties."""
 import numpy as np
 
-from ..time_grid import Simulation
+from esatan_data.fields import case_fields
+from esatan_data.writer import STRINGS
+
+POWER = 'Total_Internal_Heat_Source'
+INSTANTANEOUS = POWER + '_Instantaneous'
 
 
-def add_forcing(data, trials, node_weights, step, simulation=Simulation()):
-    """Store interval-mean nodal watts and their total; keep profiles in the design."""
-    weights = np.array([node_weights.get(int(n), 0.) for n in data['nodes/ids'][:]])
-    amplitudes = np.array([t.scalars['Q_Heat_Source'] for t in trials])
-    write_mean_power(data, [t.profile for t in trials], amplitudes, weights, step, simulation.horizon_seconds)
+def export_blocks(trials, node_weights, step, simulation):
+    """Transform source fields before automatic axis inspection and casting."""
+    by_id = {trial.id: trial for trial in trials}
+
+    def blocks(case, stride, ref):
+        trial = by_id[ref.id]
+        times = case.times[::stride]
+        weights = np.array([node_weights.get(int(n), 0.) for n in case.node_numbers])
+        fractions = trial.profile.interval_mean(times, step, simulation.horizon_seconds)
+        mean = (trial.scalars['Q_Heat_Source'] * fractions)[:, None] * weights
+        if not np.isfinite(mean).all():
+            raise ValueError(f'{ref.id}: non-finite interval power')
+        for path, values, entity in case_fields(case, stride):
+            if path == f'fields/{POWER}':
+                yield f'fields/{INSTANTANEOUS}', values, entity
+                yield path, mean, entity
+            elif path in ('fields/Capacitance', 'conductors/GL/values'):
+                # This is a recipe decision, not automatic constancy detection.
+                yield path, np.broadcast_to(values[:1], values.shape), entity
+            else:
+                yield path, values, entity
+    return blocks
 
 
-def write_mean_power(data, profiles, amplitudes, weights, step, horizon):
-    """Integrate binary events before discarding them; Q sums stored nodal watts."""
-    from .writer import STRINGS
+def field_metadata(step):
+    return {
+        f'fields/{POWER}': dict(units='W', sampling='forward_interval_mean',
+                               interval_seconds=step,
+                               final_sample='zero; no interval beyond horizon'),
+        f'fields/{INSTANTANEOUS}': dict(units='W', sampling='instantaneous'),
+        'fields/Capacitance': dict(sampling='initial_value', source_time_seconds=0.),
+        'conductors/GL/values': dict(sampling='initial_value', source_time_seconds=0.),
+    }
 
-    times = data['time'][:]
-    amplitudes, weights = np.asarray(amplitudes), np.asarray(weights)
-    if (amplitudes.shape != (len(profiles),) or weights.shape != (len(data['nodes/ids']),)
-            or not np.isfinite(amplitudes).all() or not np.isfinite(weights).all() or step <= 0):
-        raise ValueError('invalid power amplitudes, node weights or interval duration')
-    for path in ('fields/Total_Internal_Heat_Source', 'forcing/Q'):
-        if path in data:
-            del data[path]
-    field = data.create_dataset('fields/Total_Internal_Heat_Source',
-        shape=(len(profiles), len(times), len(weights)), dtype='float32',
-        chunks=(1, min(len(times), 128), len(weights)), compression='gzip', shuffle=True)
-    total = data.create_dataset('forcing/Q', shape=(len(profiles), len(times)),
-        dtype='float64', chunks=(1, len(times)), compression='gzip', shuffle=True)
-    for i, profile in enumerate(profiles):
-        fractions = profile.interval_mean(times, step, horizon)
-        # Match the published files: 5 s averages their stored float32 on-loads;
-        # 50 s averages nominal watts before distributing to nodes.
-        if step == 5:
-            on_power = np.asarray(amplitudes[i] * weights, dtype='float32')
-            values = fractions[:, None] * on_power.astype('float64')
-        else:
-            values = (amplitudes[i] * fractions)[:, None] * weights
-        block = np.asarray(values, dtype='float32')
-        field[i] = block
-        total[i] = block.sum(axis=1, dtype='float64')
-    attributes = dict(units='W', sampling='forward_interval_mean', interval_seconds=step,
-                      final_sample='zero; no interval beyond horizon', has_nan=False)
-    field.attrs.update(axes=np.asarray(('case', 'time', 'node'), dtype=STRINGS), **attributes)
-    total.attrs.update(axes=np.asarray(('case', 'time'), dtype=STRINGS), **attributes)
-    data.attrs.update(horizon_seconds=horizon, output_step_seconds=step,
-                      load_sampling='forward_interval_mean')
+
+def add_total_power(data):
+    """Sum the published nodal interval watts in float64, one case at a time."""
+    field = data[f'fields/{POWER}']
+    axes = tuple(field.attrs['axes'])
+    count, times, nodes = len(data['cases/ids']), len(data['time']), len(data['nodes/ids'])
+    total = data.create_dataset('forcing/Q', shape=(count, times), dtype='float64',
+                               chunks=(1, times), compression='gzip', shuffle=True)
+    local_axes = tuple(a for a in axes if a != 'case')
+    for i in range(count):
+        values = field[i] if 'case' in axes else field[()]
+        shape = tuple(values.shape[local_axes.index(a)] if a in local_axes else 1
+                      for a in ('time', 'node'))
+        total[i] = np.broadcast_to(values.reshape(shape), (times, nodes)).sum(axis=1, dtype='float64')
+    total.attrs.update(dict(field.attrs))
+    total.attrs['axes'] = np.asarray(('case', 'time'), dtype=STRINGS)

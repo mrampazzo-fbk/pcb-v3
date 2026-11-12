@@ -4,13 +4,14 @@ build-backend = "hatchling.build"
 
 [project]
 name = "pcb-v3"
-version = "0.2.0"
+version = "0.3.0"
 description = "PCB_v3 dataset generation: single, variable and catalog"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "esatan-launcher>=0.4.0",
-    "esatan-results-reader",
+    "esatan-launcher==0.5.0",
+    "esatan-data-collection==0.2.0",
+    "esatan-results-reader==0.2.0",
     "numpy",
     "h5py>=3.10",
 ]
@@ -19,6 +20,9 @@ dependencies = [
 pcb-v3 = "pcb_v3.cli:main"
 
 
+[tool.hatch.build]
+exclude = ["src/pcb_v3/materials.py", "src/pcb_v3/physics.py", "src/pcb_v3/physics_data/**"]
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/pcb_v3"]
 
@@ -26,8 +30,9 @@ packages = ["src/pcb_v3"]
 only-include = ["src", "scripts", "README.md", "pyproject.toml", "uv.lock"]
 
 [tool.uv.sources]
+esatan-data-collection = { path = "../esatan-tms-data-collection", editable = true }
 esatan-launcher = { path = "../esatan-launcher", editable = true }
-esatan-results-reader = { git = "ssh://git@gitlab.fbk.eu/hyres/aisa/esatan-results-reader.git" }
+esatan-results-reader = { path = "../esatan-results-reader", editable = true }
 
 [dependency-groups]
 dev = [

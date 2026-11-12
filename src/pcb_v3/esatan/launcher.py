@@ -4,7 +4,7 @@ from esatan_results_reader.esatan_tmd import ThermalResultError
 from ..time_grid import Simulation
 from .case import validate_solution
 from .inputs import to_case
-from .sweep import read_case
+from esatan_data.collection import read_case
 
 
 def solve(install, deck, trials, directory, node_weights, simulation=Simulation()):
@@ -13,7 +13,7 @@ def solve(install, deck, trials, directory, node_weights, simulation=Simulation(
     def valid_result(case, path):
         try:
             validate_solution(read_case(path), expected[case.id], node_weights, simulation)
-        except (OSError, ValueError, ThermalResultError, IndexError, KeyError):
+        except (OSError, ValueError, ThermalResultError):
             return False
         return True
 

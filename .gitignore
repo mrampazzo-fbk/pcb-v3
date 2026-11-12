@@ -9,7 +9,9 @@ build/
 runs/
 data/
 datasets/
-tests/
+tests/*
+!tests/test_export.py
+!tests/test_forcing.py
 tb_logs/
 *.h5
 *.hdf5
